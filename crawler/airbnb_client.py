@@ -10,6 +10,7 @@ TLS 지문 위장을 위해 curl_cffi를 사용합니다.
 API 키와 GraphQL hash는 api_key_extractor로 자동 추출됩니다.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 API_URL = f"{AIRBNB_API_BASE}/api/v3"
 SEARCH_OPERATION = "StaysSearch"
 CALENDAR_OPERATION = "PdpAvailabilityCalendar"
-LISTING_OPERATION = "StayListing"
+LISTING_OPERATION = "StaysPdpSections"
 
 
 def _build_headers(api_key: str) -> dict[str, str]:
@@ -302,21 +303,87 @@ class AirbnbClient:
 
     async def get_listing_detail(self, listing_id: str) -> dict[str, Any] | None:
         """
-        숙소 상세 정보를 조회합니다.
+        숙소 상세 정보를 조회합니다 (StaysPdpSections API).
 
         Args:
-            listing_id: Airbnb 숙소 ID
+            listing_id: Airbnb 숙소 ID (숫자 문자열)
         """
+        # ID를 base64 인코딩
+        stay_id = base64.b64encode(
+            f"StayListing:{listing_id}".encode()
+        ).decode()
+        demand_id = base64.b64encode(
+            f"DemandStayListing:{listing_id}".encode()
+        ).decode()
+
+        variables = {
+            "categoryTag": None,
+            "demandStayListingId": demand_id,
+            "federatedSearchId": None,
+            "id": stay_id,
+            "includeGpDescriptionFragment": True,
+            "includeGpHighlightsFragment": True,
+            "includeGpNavFragment": True,
+            "includeGpNavMobileFragment": True,
+            "includeGpReportToAirbnbFragment": True,
+            "includeGpReviewsEmptyFragment": True,
+            "includeGpReviewsFragment": True,
+            "includeGpTitleFragment": True,
+            "includeHotelFragments": True,
+            "includePdpMigrationDescriptionFragment": False,
+            "includePdpMigrationHighlightsFragment": False,
+            "includePdpMigrationNavFragment": False,
+            "includePdpMigrationNavMobileFragment": False,
+            "includePdpMigrationReportToAirbnbFragment": False,
+            "includePdpMigrationReviewsEmptyFragment": False,
+            "includePdpMigrationReviewsFragment": False,
+            "includePdpMigrationTitleFragment": False,
+            "p3ImpressionId": f"p3_{int(__import__('time').time())}_crawl",
+            "pdpSectionsRequest": {
+                "adults": str(DEFAULT_GUESTS),
+                "amenityFilters": None,
+                "bypassTargetings": False,
+                "categoryTag": None,
+                "causeId": None,
+                "checkIn": None,
+                "checkOut": None,
+                "children": None,
+                "disasterId": None,
+                "discountedGuestFeeVersion": None,
+                "federatedSearchId": None,
+                "forceBoostPriorityMessageType": None,
+                "hostPreview": False,
+                "infants": None,
+                "interactionType": None,
+                "layouts": ["SIDEBAR", "SINGLE_COLUMN"],
+                "p3ImpressionId": f"p3_{int(__import__('time').time())}_crawl",
+                "pdpTypeOverride": None,
+                "pets": 0,
+                "photoId": None,
+                "preview": False,
+                "previousStateCheckIn": None,
+                "previousStateCheckOut": None,
+                "priceDropSource": None,
+                "privateBooking": False,
+                "promotionUuid": None,
+                "relaxedAmenityIds": None,
+                "searchId": None,
+                "sectionIds": None,
+                "selectedCancellationPolicyId": None,
+                "selectedRatePlanId": None,
+                "splitStays": None,
+                "staysBookingMigrationEnabled": False,
+                "translateUgc": None,
+                "useNewSectionWrapperApi": False,
+            },
+            "photoId": None,
+        }
+
         params = {
             "operationName": LISTING_OPERATION,
             "locale": "ko",
             "currency": CURRENCY,
-            "variables": json.dumps({
-                "id": listing_id,
-                "pdpSectionsRequest": {
-                    "layouts": ["SIDEBAR", "SINGLE_COLUMN"],
-                },
-            }),
+            "variables": json.dumps(variables),
             "extensions": json.dumps({
                 "persistedQuery": {
                     "version": 1,

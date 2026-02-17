@@ -7,6 +7,7 @@
 """
 
 import logging
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -49,7 +50,20 @@ class CalendarCrawler:
         return days
 
     def _extract_calendar_days(self, data: dict) -> list[dict]:
-        """API 응답에서 날짜별 데이터를 추출합니다."""
+        """API 응답에서 날짜별 데이터를 추출합니다.
+
+        2026.02 기준 응답 구조:
+        data.merlin.pdpAvailabilityCalendar.calendarMonths[].days[] = {
+            calendarDate: "2026-02-18",
+            available: true/false,
+            bookable: true/false/null,
+            minNights: 1,
+            maxNights: 365,
+            availableForCheckin: true/false,
+            availableForCheckout: true/false,
+            price: { localPriceFormatted: "₩50,000" | null }
+        }
+        """
         days = []
 
         try:
@@ -66,16 +80,12 @@ class CalendarCrawler:
                     if not cal_date:
                         continue
 
-                    price_data = day_data.get("price", {})
-                    price = None
-                    if price_data:
-                        price = price_data.get("amount")
-                        if price is not None:
-                            price = float(price)
+                    price = self._parse_calendar_price(day_data.get("price"))
 
                     days.append({
                         "date": cal_date,  # "YYYY-MM-DD"
                         "available": day_data.get("available", False),
+                        "bookable": day_data.get("bookable"),
                         "price": price,
                         "min_nights": day_data.get("minNights"),
                     })
@@ -86,8 +96,35 @@ class CalendarCrawler:
 
         return days
 
+    @staticmethod
+    def _parse_calendar_price(price_data: dict | None) -> float | None:
+        """캘린더 가격을 파싱합니다.
+
+        2026 구조: {"localPriceFormatted": "₩50,000"} 또는 null
+        구버전: {"amount": 50000}
+        """
+        if not price_data or not isinstance(price_data, dict):
+            return None
+
+        # 구버전 호환: amount 필드
+        amount = price_data.get("amount")
+        if amount is not None:
+            try:
+                return float(amount)
+            except (ValueError, TypeError):
+                pass
+
+        # 2026 구조: localPriceFormatted ("₩50,000")
+        formatted = price_data.get("localPriceFormatted")
+        if formatted:
+            nums = re.sub(r"[^\d]", "", formatted)
+            if nums:
+                return float(nums)
+
+        return None
+
     def _extract_calendar_fallback(self, data: dict) -> list[dict]:
-        """API 구조 변경 시 대체 파싱."""
+        """API 구조 변경 시 대체 파싱 (재귀 탐색)."""
         days = []
 
         def _find_days(obj, depth=0):
@@ -95,11 +132,11 @@ class CalendarCrawler:
                 return
             if isinstance(obj, dict):
                 if "calendarDate" in obj and "available" in obj:
-                    price_data = obj.get("price", {})
                     days.append({
                         "date": obj["calendarDate"],
                         "available": obj["available"],
-                        "price": float(price_data["amount"]) if isinstance(price_data, dict) and "amount" in price_data else None,
+                        "bookable": obj.get("bookable"),
+                        "price": self._parse_calendar_price(obj.get("price")),
                         "min_nights": obj.get("minNights"),
                     })
                 else:
