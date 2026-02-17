@@ -1,13 +1,12 @@
 """
 Airbnb API Key & GraphQL Hash 자동 추출기
 
-Playwright를 사용하여 Airbnb 웹사이트에서:
-1. X-Airbnb-API-Key (클라이언트 공개 키)
-2. GraphQL persistedQuery sha256Hash 값들 (StaysSearch, PdpAvailabilityCalendar 등)
-을 자동으로 추출합니다.
+두 가지 방법으로 추출:
+1. httpx: 가볍고 빠름. Airbnb HTML + JS 번들에서 정규식으로 추출.
+2. Playwright: 브라우저 기반. httpx 실패 시 fallback.
 
-로그인 불필요 - 홈페이지 접속 + 검색 한 번이면 충분합니다.
-추출된 값은 .api_credentials.json에 캐시됩니다.
+로그인 불필요 - 홈페이지 접속만으로 충분합니다.
+추출된 값은 data/.api_credentials.json에 캐시됩니다.
 """
 
 import asyncio
@@ -22,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / ".api_credentials.json"
 CACHE_MAX_AGE_HOURS = 72  # 3일마다 갱신
+
+# 관심 있는 GraphQL operation 이름들
+TARGET_OPS = [
+    "StaysSearch",
+    "PdpAvailabilityCalendar",
+    "StayListing",
+    "StaysPdpSections",
+    "ExploreSearch",
+]
 
 
 def _load_cache() -> dict[str, Any] | None:
@@ -55,50 +63,166 @@ def _save_cache(data: dict[str, Any]):
     logger.info("Saved API credentials to cache: %s", CACHE_FILE)
 
 
-async def extract_api_credentials(headless: bool = True,
-                                   force_refresh: bool = False) -> dict[str, Any]:
-    """
-    Playwright로 Airbnb에서 API key + GraphQL hash를 추출합니다.
+# ─── 방법 1: httpx 기반 (가벼움, 브라우저 불필요) ───────────────────
 
-    Args:
-        headless: 브라우저를 헤드리스로 실행할지 여부
-        force_refresh: 캐시 무시하고 강제 재추출
+def _extract_api_key_from_html(html: str) -> str:
+    """HTML 소스에서 API 키를 추출합니다."""
+    # 패턴 1: "key":"d306zoyjsyarp7ifhu67rjxn52tv0t20" 형태
+    patterns = [
+        r'"key"\s*:\s*"([a-z0-9]{32,})"',
+        r'"api_key"\s*:\s*"([a-z0-9]{32,})"',
+        r'"AIRBNB_API_KEY"\s*:\s*"([a-z0-9]{32,})"',
+        r'x-airbnb-api-key["\s:]+([a-z0-9]{32,})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
 
-    Returns:
-        {
-            "api_key": "d306...",
-            "hashes": {
-                "StaysSearch": "abc123...",
-                "PdpAvailabilityCalendar": "def456...",
-                "StayListing": "ghi789...",
-                ...
-            },
-            "cached_at": 1234567890.0
-        }
-    """
-    # 캐시 확인
-    if not force_refresh:
-        cached = _load_cache()
-        if cached:
-            return cached
 
-    logger.info("Extracting API credentials from Airbnb (headless=%s)...", headless)
+def _extract_hashes_from_text(text: str) -> dict[str, str]:
+    """텍스트에서 GraphQL operation hash를 추출합니다."""
+    hashes = {}
+    for op in TARGET_OPS:
+        patterns = [
+            # Airbnb 번들: name:'StaysSearch'...operationId:'hex64'
+            rf"name:\s*'{op}'[^}}]{{0,300}}operationId:\s*'([a-f0-9]{{64}})'",
+            # "operationName":"StaysSearch" 근처의 sha256Hash
+            rf'"{op}"[^}}]{{0,500}}"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"',
+            rf'"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"[^}}]{{0,500}}"{op}"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                hashes[op] = match.group(1)
+                break
+    return hashes
 
-    from playwright.async_api import async_playwright
 
-    credentials = {
-        "api_key": "",
-        "hashes": {},
+async def _extract_via_httpx() -> dict[str, Any]:
+    """httpx로 Airbnb 페이지를 가져와서 API 키 + 해시를 추출합니다."""
+    import httpx
+
+    credentials = {"api_key": "", "hashes": {}}
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
     }
 
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        # 1. 서울 검색 페이지 가져오기
+        logger.info("[httpx] Fetching Airbnb Seoul search page...")
+        resp = await client.get("https://www.airbnb.co.kr/s/Seoul/homes")
+
+        if resp.status_code != 200:
+            logger.warning("[httpx] Got status %d from Airbnb", resp.status_code)
+            return credentials
+
+        html = resp.text
+        logger.info("[httpx] Got %d bytes of HTML", len(html))
+
+        # 2. HTML에서 API 키 추출
+        api_key = _extract_api_key_from_html(html)
+        if api_key:
+            credentials["api_key"] = api_key
+            logger.info("[httpx] Found API key from HTML: %s...%s", api_key[:8], api_key[-4:])
+
+        # 3. 인라인 스크립트에서 해시 추출
+        hashes = _extract_hashes_from_text(html)
+        credentials["hashes"].update(hashes)
+        if hashes:
+            logger.info("[httpx] Found %d hashes from inline scripts", len(hashes))
+
+        # 4. JS 번들 URL 추출 & 다운로드
+        # Airbnb는 a0.muscache.com CDN에서 JS 번들을 로드
+        js_urls = re.findall(
+            r'https://a0\.muscache\.com/[^\"\'\s]+\.js',
+            html,
+        )
+        # _next/static 패턴도 시도
+        js_urls += [
+            f"https://www.airbnb.co.kr{m}"
+            for m in re.findall(r'"(/_next/static/[^"]+\.js)"', html)
+        ]
+        # 중복 제거
+        js_urls = list(dict.fromkeys(js_urls))
+
+        logger.info("[httpx] Found %d JS bundle URLs to scan", len(js_urls))
+
+        for js_url in js_urls[:40]:  # muscache 번들 전부 스캔
+            try:
+                js_resp = await client.get(js_url)
+                if js_resp.status_code != 200:
+                    continue
+
+                js_text = js_resp.text
+
+                # API 키 재시도
+                if not credentials["api_key"]:
+                    key = _extract_api_key_from_html(js_text)
+                    if key:
+                        credentials["api_key"] = key
+                        logger.info("[httpx] Found API key from JS bundle: %s...%s",
+                                    key[:8], key[-4:])
+
+                # 해시 추출
+                new_hashes = _extract_hashes_from_text(js_text)
+                for op, h in new_hashes.items():
+                    if op not in credentials["hashes"]:
+                        credentials["hashes"][op] = h
+                        logger.info("[httpx] Found hash from JS: %s = %s...", op, h[:16])
+
+                # 모든 것을 찾았으면 중단
+                if credentials["api_key"] and len(credentials["hashes"]) >= 3:
+                    break
+
+            except Exception as e:
+                logger.debug("[httpx] Error fetching %s: %s", js_url[:60], e)
+                continue
+
+    return credentials
+
+
+# ─── 방법 2: Playwright 기반 (브라우저 렌더링) ───────────────────
+
+async def _extract_via_playwright(headless: bool = True) -> dict[str, Any]:
+    """Playwright로 Airbnb에서 API key + GraphQL hash를 추출합니다."""
+    from playwright.async_api import async_playwright
+
+    credentials = {"api_key": "", "hashes": {}}
+
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=headless,
-            args=[
+        launch_kwargs = {
+            "headless": headless,
+            "args": [
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
             ],
-        )
+        }
+
+        # 설치된 chromium 바이너리를 직접 찾기
+        pw_cache = Path.home() / ".cache" / "ms-playwright"
+        if pw_cache.exists():
+            for candidate in sorted(
+                pw_cache.glob("chromium-*/chrome-linux/chrome"), reverse=True
+            ):
+                launch_kwargs["executable_path"] = str(candidate)
+                logger.info("Using chromium at: %s", candidate)
+                break
+
+        browser = await p.chromium.launch(**launch_kwargs)
 
         context = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
@@ -111,35 +235,27 @@ async def extract_api_credentials(headless: bool = True,
             ),
         )
 
-        # WebDriver 플래그 제거
-        await context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        """)
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+        )
 
         page = await context.new_page()
 
         # 네트워크 요청 가로채기
-        api_requests_captured = []
-
         async def on_request(request):
             url = request.url
             if "/api/v3/" in url or "StaysSearch" in url:
-                headers = request.headers
-                api_key = headers.get("x-airbnb-api-key", "")
+                hdrs = request.headers
+                api_key = hdrs.get("x-airbnb-api-key", "")
                 if api_key and not credentials["api_key"]:
                     credentials["api_key"] = api_key
                     logger.info("Captured API key: %s...%s", api_key[:8], api_key[-4:])
 
-                # URL에서 extensions 파라미터 추출 (sha256Hash 포함)
                 try:
                     from urllib.parse import parse_qs, urlparse
                     parsed = urlparse(url)
                     params = parse_qs(parsed.query)
-
-                    op_name = ""
-                    if "operationName" in params:
-                        op_name = params["operationName"][0]
-
+                    op_name = params.get("operationName", [""])[0]
                     if "extensions" in params:
                         ext = json.loads(params["extensions"][0])
                         sha_hash = ext.get("persistedQuery", {}).get("sha256Hash", "")
@@ -149,12 +265,9 @@ async def extract_api_credentials(headless: bool = True,
                 except Exception as e:
                     logger.debug("Error parsing request params: %s", e)
 
-                api_requests_captured.append(url)
-
         page.on("request", on_request)
 
         try:
-            # 1. Airbnb 서울 검색 페이지 접속 (검색 API가 자동 호출됨)
             logger.info("Step 1: Loading Airbnb Seoul search page...")
             await page.goto(
                 "https://www.airbnb.co.kr/s/Seoul/homes",
@@ -163,33 +276,21 @@ async def extract_api_credentials(headless: bool = True,
             )
             await page.wait_for_timeout(3000)
 
-            # 2. API 키가 안 잡혔으면 JS 번들에서 직접 추출
+            # JS 컨텍스트에서 API 키 추출
             if not credentials["api_key"]:
                 logger.info("Step 2: Extracting API key from JS context...")
                 api_key_from_js = await page.evaluate("""
                     () => {
-                        // 방법 1: __NEXT_DATA__ 에서 추출
                         const nextData = document.getElementById('__NEXT_DATA__');
                         if (nextData) {
-                            const text = nextData.textContent;
-                            const match = text.match(/"key":"([a-z0-9]+)"/);
+                            const match = nextData.textContent.match(/"key":"([a-z0-9]+)"/);
                             if (match) return match[1];
                         }
-
-                        // 방법 2: 전역 변수에서 추출
                         if (window.__airbnb_bootstrapped_data__) {
                             const data = JSON.stringify(window.__airbnb_bootstrapped_data__);
                             const match = data.match(/"key":"([a-z0-9]+)"/);
                             if (match) return match[1];
                         }
-
-                        // 방법 3: meta 태그에서 추출
-                        const metas = document.querySelectorAll('meta');
-                        for (const meta of metas) {
-                            const content = meta.getAttribute('content') || '';
-                            if (content.match(/^[a-z0-9]{32,}$/)) return content;
-                        }
-
                         return '';
                     }
                 """)
@@ -198,159 +299,85 @@ async def extract_api_credentials(headless: bool = True,
                     logger.info("Extracted API key from JS: %s...%s",
                                 api_key_from_js[:8], api_key_from_js[-4:])
 
-            # 3. 해시가 부족하면 페이지 스크롤로 추가 API 호출 유도
+            # 스크롤로 추가 API 호출 유도
             if len(credentials["hashes"]) < 1:
-                logger.info("Step 3: Scrolling to trigger more API calls...")
                 for _ in range(3):
                     await page.evaluate("window.scrollBy(0, 800)")
                     await page.wait_for_timeout(2000)
 
-            # 4. 개별 숙소 페이지 접속 (캘린더/상세 해시 추출)
+            # 숙소 페이지 방문 (캘린더 해시)
             if "PdpAvailabilityCalendar" not in credentials["hashes"]:
-                logger.info("Step 4: Visiting a listing page for calendar hash...")
-                # 검색 결과에서 첫 번째 숙소 링크 찾기
                 listing_link = await page.evaluate("""
                     () => {
                         const links = document.querySelectorAll('a[href*="/rooms/"]');
                         for (const link of links) {
                             const href = link.getAttribute('href');
-                            if (href && href.match(/\\/rooms\\/\\d+/)) {
-                                return href;
-                            }
+                            if (href && href.match(/\\/rooms\\/\\d+/)) return href;
                         }
                         return '';
                     }
                 """)
-
                 if listing_link:
-                    full_url = listing_link if listing_link.startswith("http") \
-                        else f"https://www.airbnb.co.kr{listing_link}"
-                    logger.info("Visiting listing: %s", full_url[:60])
+                    full_url = (listing_link if listing_link.startswith("http")
+                                else f"https://www.airbnb.co.kr{listing_link}")
                     await page.goto(full_url, wait_until="networkidle", timeout=30000)
                     await page.wait_for_timeout(3000)
 
-                    # 캘린더 열기 시도
-                    try:
-                        calendar_btn = page.locator('[data-testid="availability-calendar"],'
-                                                     'button:has-text("날짜"),'
-                                                     'button:has-text("체크인")')
-                        if await calendar_btn.count() > 0:
-                            await calendar_btn.first.click()
-                            await page.wait_for_timeout(2000)
-                    except Exception:
-                        pass
-
-            # 5. JS 번들에서 해시 추출 (백업 방법)
-            if len(credentials["hashes"]) < 2:
-                logger.info("Step 5: Scanning JS bundles for GraphQL hashes...")
-                hashes_from_js = await _extract_hashes_from_scripts(page)
-                for op_name, hash_val in hashes_from_js.items():
-                    if op_name not in credentials["hashes"]:
-                        credentials["hashes"][op_name] = hash_val
-                        logger.info("Found hash from JS bundle: %s = %s...",
-                                    op_name, hash_val[:16])
-
         except Exception as e:
-            logger.error("Error during extraction: %s", e)
+            logger.error("Playwright extraction error: %s", e)
         finally:
             await browser.close()
 
-    # 결과 검증 및 저장
-    if credentials["api_key"]:
+    return credentials
+
+
+# ─── 메인 추출 함수 ─────────────────────────────────────────
+
+async def extract_api_credentials(headless: bool = True,
+                                   force_refresh: bool = False) -> dict[str, Any]:
+    """
+    Airbnb에서 API key + GraphQL hash를 추출합니다.
+
+    httpx를 먼저 시도하고, 실패하면 Playwright fallback.
+
+    Returns:
+        {"api_key": "d306...", "hashes": {...}, "cached_at": ...}
+    """
+    if not force_refresh:
+        cached = _load_cache()
+        if cached:
+            return cached
+
+    # 방법 1: httpx (가볍고 빠름)
+    logger.info("Attempting extraction via httpx...")
+    credentials = await _extract_via_httpx()
+
+    # httpx로 API 키를 못 찾으면 Playwright 시도
+    if not credentials.get("api_key"):
+        logger.info("httpx extraction failed. Trying Playwright...")
+        try:
+            credentials = await _extract_via_playwright(headless=headless)
+        except Exception as e:
+            logger.error("Playwright extraction also failed: %s", e)
+
+    # 결과 저장
+    if credentials.get("api_key"):
         _save_cache(credentials)
         logger.info(
-            "Extraction complete: api_key=%s, %d operation hashes captured",
+            "Extraction complete: api_key=%s, %d operation hashes",
             f"{credentials['api_key'][:8]}...{credentials['api_key'][-4:]}",
-            len(credentials["hashes"]),
+            len(credentials.get("hashes", {})),
         )
     else:
         logger.error(
-            "Failed to extract API key. Airbnb may have changed its structure. "
-            "Try with headless=False to debug visually."
+            "Failed to extract API key from both httpx and Playwright. "
+            "Try with --visible to debug, or set AIRBNB_API_KEY manually."
         )
 
     return credentials
 
 
-async def _extract_hashes_from_scripts(page) -> dict[str, str]:
-    """
-    페이지의 JS 소스코드에서 GraphQL operation hash를 추출합니다.
-
-    Airbnb의 webpack 번들에는 persistedQuery hash가 하드코딩되어 있습니다.
-    """
-    hashes = {}
-
-    # 관심 있는 operation 이름들
-    target_ops = [
-        "StaysSearch",
-        "PdpAvailabilityCalendar",
-        "StayListing",
-        "StaysPdpSections",
-        "ExploreSearch",
-    ]
-
-    try:
-        # 방법 1: 인라인 스크립트 + __NEXT_DATA__에서 추출
-        all_scripts_text = await page.evaluate("""
-            () => {
-                const scripts = document.querySelectorAll('script');
-                let text = '';
-                for (const s of scripts) {
-                    if (s.textContent && s.textContent.length > 100) {
-                        text += s.textContent + '\\n';
-                    }
-                }
-                return text.substring(0, 500000);  // 500KB 제한
-            }
-        """)
-
-        for op in target_ops:
-            # 패턴: "operationName":"StaysSearch"..."sha256Hash":"abc123"
-            patterns = [
-                rf'"{op}"[^}}]{{0,500}}"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"',
-                rf'"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"[^}}]{{0,500}}"{op}"',
-                rf'{op}[^"]*"[^"]*"([a-f0-9]{{64}})"',
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, all_scripts_text)
-                if match:
-                    hashes[op] = match.group(1)
-                    break
-
-        # 방법 2: 외부 JS 파일 내용 검색 (로드된 것만)
-        if len(hashes) < 2:
-            js_urls = await page.evaluate("""
-                () => {
-                    return Array.from(document.querySelectorAll('script[src]'))
-                        .map(s => s.src)
-                        .filter(src => src.includes('_next') || src.includes('chunk'));
-                }
-            """)
-
-            for js_url in js_urls[:5]:  # 최대 5개 번들만 확인
-                try:
-                    response = await page.request.get(js_url)
-                    if response.ok:
-                        content = await response.text()
-                        for op in target_ops:
-                            if op in hashes:
-                                continue
-                            for pattern in [
-                                rf'"{op}"[^}}]{{0,500}}"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"',
-                                rf'"sha256Hash"\s*:\s*"([a-f0-9]{{64}})"[^}}]{{0,500}}"{op}"',
-                            ]:
-                                match = re.search(pattern, content)
-                                if match:
-                                    hashes[op] = match.group(1)
-                                    break
-                except Exception:
-                    continue
-
-    except Exception as e:
-        logger.debug("Error extracting hashes from scripts: %s", e)
-
-    return hashes
-
+# ─── 동기 헬퍼 ──────────────────────────────────────────────
 
 def get_cached_credentials() -> dict[str, Any] | None:
     """캐시된 credentials를 반환합니다 (동기 함수)."""
@@ -358,15 +385,10 @@ def get_cached_credentials() -> dict[str, Any] | None:
 
 
 def get_api_key_sync() -> str:
-    """
-    API 키를 동기적으로 반환합니다.
-    캐시가 있으면 캐시에서, 없으면 새로 추출합니다.
-    """
+    """API 키를 동기적으로 반환합니다."""
     cached = _load_cache()
     if cached and cached.get("api_key"):
         return cached["api_key"]
-
-    # 새로 추출
     credentials = asyncio.run(extract_api_credentials())
     return credentials.get("api_key", "")
 
@@ -379,7 +401,8 @@ def get_operation_hash(operation_name: str) -> str:
     return ""
 
 
-# CLI로 직접 실행 가능
+# ─── CLI ─────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
 

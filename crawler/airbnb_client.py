@@ -199,27 +199,60 @@ class AirbnbClient:
         lat_offset = SEARCH_RADIUS_KM / 111.0
         lng_offset = SEARCH_RADIUS_KM / (111.0 * 0.85)  # 서울 위도 보정
 
+        treatment_flags = [
+            "feed_map_decouple_m11_treatment",
+            "recommended_amenities_2024_treatment_b",
+            "filter_redesign_2024_treatment",
+            "filter_reordering_2024_roomtype_treatment",
+            "p2_category_bar_removal_treatment",
+            "selected_filters_2024_treatment",
+            "recommended_filters_2024_treatment_b",
+        ]
+
+        # 지도/리스트 공통 rawParams
+        base_params = [
+            {"filterName": "adults", "filterValues": [str(guests)]},
+            {"filterName": "cdnCacheSafe", "filterValues": ["false"]},
+            {"filterName": "checkin", "filterValues": [checkin.isoformat()]},
+            {"filterName": "checkout", "filterValues": [checkout.isoformat()]},
+            {"filterName": "ne_lat", "filterValues": [str(lat + lat_offset)]},
+            {"filterName": "ne_lng", "filterValues": [str(lng + lng_offset)]},
+            {"filterName": "sw_lat", "filterValues": [str(lat - lat_offset)]},
+            {"filterName": "sw_lng", "filterValues": [str(lng - lng_offset)]},
+            {"filterName": "refinementPaths", "filterValues": ["/homes"]},
+            {"filterName": "screenSize", "filterValues": ["large"]},
+            {"filterName": "tabId", "filterValues": ["home_tab"]},
+            {"filterName": "version", "filterValues": ["1.8.8"]},
+            {"filterName": "search_type", "filterValues": ["filter_change"]},
+        ]
+        if cursor:
+            base_params.append({"filterName": "cursor", "filterValues": [cursor]})
+
+        # 리스트용 rawParams (itemsPerGrid 추가)
+        list_params = base_params + [
+            {"filterName": "itemsPerGrid", "filterValues": ["18"]},
+        ]
+
         params = {
             "operationName": SEARCH_OPERATION,
             "locale": "ko",
             "currency": CURRENCY,
             "variables": json.dumps({
-                "staysSearchRequest": {
-                    "requestedPageType": "STAYS_SEARCH",
-                    "cursor": cursor,
+                "aiSearchEnabled": False,
+                "isLeanTreatment": False,
+                "skipExtendedSearchParams": False,
+                "staysMapSearchRequestV2": {
                     "metadataOnly": False,
-                    "searchType": "FILTER_CHANGE",
-                    "treatmentFlags": [],
-                    "rawParams": [
-                        {"filterName": "adults", "filterValues": [str(guests)]},
-                        {"filterName": "checkin", "filterValues": [checkin.isoformat()]},
-                        {"filterName": "checkout", "filterValues": [checkout.isoformat()]},
-                        {"filterName": "ne_lat", "filterValues": [str(lat + lat_offset)]},
-                        {"filterName": "ne_lng", "filterValues": [str(lng + lng_offset)]},
-                        {"filterName": "sw_lat", "filterValues": [str(lat - lat_offset)]},
-                        {"filterName": "sw_lng", "filterValues": [str(lng - lng_offset)]},
-                        {"filterName": "search_type", "filterValues": ["filter_change"]},
-                    ],
+                    "rawParams": base_params,
+                    "requestedPageType": "STAYS_SEARCH",
+                    "treatmentFlags": treatment_flags,
+                },
+                "staysSearchRequest": {
+                    "maxMapItems": 9999,
+                    "metadataOnly": False,
+                    "rawParams": list_params,
+                    "requestedPageType": "STAYS_SEARCH",
+                    "treatmentFlags": treatment_flags,
                 },
             }),
             "extensions": json.dumps({
