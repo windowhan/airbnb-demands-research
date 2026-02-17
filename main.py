@@ -2,6 +2,10 @@
 Airbnb 서울 지역별 수요 조사 크롤러 - 진입점
 
 사용법:
+  # API 키 자동 추출 (최초 1회 필요)
+  python main.py --extract-key
+  python main.py --extract-key --visible   # 브라우저 보이게
+
   # 스케줄러 모드 (기본): 설정된 주기로 자동 크롤링
   python main.py
 
@@ -161,6 +165,14 @@ def main():
         "--status", action="store_true",
         help="Show current crawler status",
     )
+    parser.add_argument(
+        "--extract-key", action="store_true",
+        help="Auto-extract Airbnb API key using Playwright",
+    )
+    parser.add_argument(
+        "--visible", action="store_true",
+        help="Show browser window during API key extraction",
+    )
 
     args = parser.parse_args()
 
@@ -170,6 +182,20 @@ def main():
     # DB 초기화
     init_db()
     logger.info("Database initialized (tier=%s)", CRAWL_TIER)
+
+    if args.extract_key:
+        from crawler.api_key_extractor import extract_api_credentials
+        creds = asyncio.run(extract_api_credentials(
+            headless=not args.visible,
+            force_refresh=True,
+        ))
+        if creds.get("api_key"):
+            print(f"\nAPI Key: {creds['api_key'][:8]}...{creds['api_key'][-4:]}")
+            print(f"Hashes: {list(creds.get('hashes', {}).keys())}")
+            print("Saved to data/.api_credentials.json")
+        else:
+            print("\nFailed to extract API key. Try --visible to debug.")
+        return
 
     if args.init:
         load_stations_from_json()

@@ -7,6 +7,7 @@ Airbnb GraphQL API v3를 사용하여 데이터를 가져옵니다.
 - StayListing: 숙소 상세 정보
 
 TLS 지문 위장을 위해 curl_cffi를 사용합니다.
+API 키와 GraphQL hash는 api_key_extractor로 자동 추출됩니다.
 """
 
 import hashlib
@@ -24,6 +25,7 @@ from config.settings import (
     SEARCH_RADIUS_KM,
     USER_AGENTS,
 )
+from crawler.api_key_extractor import get_cached_credentials, get_operation_hash
 from crawler.proxy_manager import ProxyManager
 from crawler.rate_limiter import BlockType, RateLimiter
 
@@ -71,10 +73,19 @@ class AirbnbClient:
         self._proxy_manager = proxy_manager or ProxyManager.from_config()
         self._http_client = None
 
+        # 환경변수에 키가 없으면 캐시에서 자동 로드
+        if not self._api_key:
+            cached = get_cached_credentials()
+            if cached and cached.get("api_key"):
+                self._api_key = cached["api_key"]
+                logger.info("Loaded API key from cache: %s...%s",
+                            self._api_key[:8], self._api_key[-4:])
+
         if not self._api_key:
             logger.warning(
                 "AIRBNB_API_KEY is not set. "
-                "Extract it from browser DevTools (Network tab → X-Airbnb-API-Key header)."
+                "Run 'python -m crawler.api_key_extractor' to auto-extract, "
+                "or set AIRBNB_API_KEY environment variable."
             )
 
     async def _ensure_client(self):
@@ -214,7 +225,7 @@ class AirbnbClient:
             "extensions": json.dumps({
                 "persistedQuery": {
                     "version": 1,
-                    "sha256Hash": "",  # Airbnb에서 실제 해시 필요 - 브라우저에서 추출
+                    "sha256Hash": get_operation_hash(SEARCH_OPERATION),
                 },
             }),
         }
@@ -248,7 +259,7 @@ class AirbnbClient:
             "extensions": json.dumps({
                 "persistedQuery": {
                     "version": 1,
-                    "sha256Hash": "",
+                    "sha256Hash": get_operation_hash(CALENDAR_OPERATION),
                 },
             }),
         }
@@ -276,7 +287,7 @@ class AirbnbClient:
             "extensions": json.dumps({
                 "persistedQuery": {
                     "version": 1,
-                    "sha256Hash": "",
+                    "sha256Hash": get_operation_hash(LISTING_OPERATION),
                 },
             }),
         }

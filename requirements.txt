@@ -5,6 +5,9 @@ sqlalchemy>=2.0.0
 # TLS fingerprint impersonation (recommended)
 curl_cffi>=0.7.0
 
+# API key auto-extraction
+playwright>=1.40.0
+
 # Scheduler
 apscheduler>=3.10.0
 
