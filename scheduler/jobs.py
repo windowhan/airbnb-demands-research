@@ -156,6 +156,15 @@ async def run_listing_detail_job():
         await client.close()
 
 
+def run_aggregation_job():
+    """daily_stats 집계 작업 (매일 새벽 실행)."""
+    from analysis.aggregator import run_aggregation
+
+    logger.info("=== Aggregation job started at %s ===", datetime.now().isoformat())
+    run_aggregation(days_back=1)
+    logger.info("=== Aggregation job completed ===")
+
+
 def setup_scheduler():
     """APScheduler를 설정합니다."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -193,6 +202,15 @@ def setup_scheduler():
             name="Listing Detail Crawler",
             max_instances=1,
         )
+
+    # daily_stats 집계: 매일 새벽 6시
+    scheduler.add_job(
+        run_aggregation_job,
+        CronTrigger(hour=6, minute=0),
+        id="aggregation_job",
+        name="Daily Stats Aggregation",
+        max_instances=1,
+    )
 
     logger.info(
         "Scheduler configured (tier=%s): search=%dmin, calendar=%s, detail=%s",

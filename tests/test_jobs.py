@@ -534,3 +534,35 @@ class TestJobEdgeCases:
         mock_client_cls.return_value = mock_client
 
         await run_listing_detail_job()
+
+
+# ─── run_aggregation_job ────────────────────────────────────────────
+
+class TestRunAggregationJob:
+    """run_aggregation_job 함수 테스트."""
+
+    def test_run_aggregation_job_calls_run_aggregation(self):
+        """run_aggregation_job이 run_aggregation(days_back=1)을 호출한다."""
+        from scheduler.jobs import run_aggregation_job
+        with patch("analysis.aggregator.run_aggregation") as mock_agg:
+            run_aggregation_job()
+        mock_agg.assert_called_once_with(days_back=1)
+
+    def test_run_aggregation_job_logs_messages(self):
+        """run_aggregation_job이 시작/완료 로그를 남긴다."""
+        from scheduler.jobs import run_aggregation_job
+        with patch("analysis.aggregator.run_aggregation"), \
+             patch("scheduler.jobs.logger") as mock_logger:
+            run_aggregation_job()
+        mock_logger.info.assert_called()
+
+    @patch("scheduler.jobs.get_tier_config")
+    def test_setup_scheduler_aggregation_job_always_added(self, mock_tier):
+        """aggregation_job은 티어에 관계없이 항상 등록된다."""
+        mock_tier.return_value = {**TIER_A_CONFIG}
+
+        from scheduler.jobs import setup_scheduler
+        scheduler = setup_scheduler()
+
+        job_ids = {job.id for job in scheduler.get_jobs()}
+        assert "aggregation_job" in job_ids
