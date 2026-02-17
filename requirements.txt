@@ -1,0 +1,25 @@
+# Core
+httpx>=0.27.0
+sqlalchemy>=2.0.0
+
+# TLS fingerprint impersonation (recommended)
+curl_cffi>=0.7.0
+
+# API key auto-extraction
+playwright>=1.40.0
+
+# Scheduler
+apscheduler>=3.10.0
+
+# Analysis (Phase 3+)
+pandas>=2.0.0
+plotly>=5.18.0
+folium>=0.15.0
+geopy>=2.4.0
+
+# Dashboard (Phase 4+)
+streamlit>=1.30.0
+
+# Development
+jupyter>=1.0.0
+ipykernel>=6.0.0

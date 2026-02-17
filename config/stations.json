@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "description": "서울 지하철역 좌표 데이터 (관광/비즈니스 우선순위 기반)",
+    "source": "서울교통공사 공개 데이터 + Google Maps 좌표",
+    "search_radius_km": 1.0
+  },
+  "stations": [
+    {"name": "강남", "line": "2호선", "district": "강남구", "lat": 37.4981, "lng": 127.0276, "priority": 1},
+    {"name": "홍대입구", "line": "2호선", "district": "마포구", "lat": 37.5571, "lng": 126.9244, "priority": 1},
+    {"name": "명동", "line": "4호선", "district": "중구", "lat": 37.5609, "lng": 126.9860, "priority": 1},
+    {"name": "이태원", "line": "6호선", "district": "용산구", "lat": 37.5345, "lng": 126.9946, "priority": 1},
+    {"name": "잠실", "line": "2호선", "district": "송파구", "lat": 37.5133, "lng": 127.1001, "priority": 1},
+    {"name": "동대문", "line": "1호선", "district": "종로구", "lat": 37.5715, "lng": 127.0095, "priority": 1},
+    {"name": "종로3가", "line": "1호선", "district": "종로구", "lat": 37.5717, "lng": 126.9917, "priority": 1},
+    {"name": "서울역", "line": "1호선", "district": "중구", "lat": 37.5547, "lng": 126.9707, "priority": 1},
+    {"name": "합정", "line": "2호선", "district": "마포구", "lat": 37.5495, "lng": 126.9138, "priority": 1},
+    {"name": "신촌", "line": "2호선", "district": "서대문구", "lat": 37.5553, "lng": 126.9372, "priority": 1},
+    {"name": "건대입구", "line": "2호선", "district": "광진구", "lat": 37.5404, "lng": 127.0694, "priority": 1},
+    {"name": "성수", "line": "2호선", "district": "성동구", "lat": 37.5445, "lng": 127.0557, "priority": 1},
+    {"name": "을지로입구", "line": "2호선", "district": "중구", "lat": 37.5660, "lng": 126.9825, "priority": 1},
+    {"name": "광화문", "line": "5호선", "district": "종로구", "lat": 37.5710, "lng": 126.9769, "priority": 1},
+    {"name": "여의도", "line": "5호선", "district": "영등포구", "lat": 37.5217, "lng": 126.9244, "priority": 1},
+    {"name": "삼성", "line": "2호선", "district": "강남구", "lat": 37.5089, "lng": 127.0630, "priority": 1},
+    {"name": "역삼", "line": "2호선", "district": "강남구", "lat": 37.5007, "lng": 127.0366, "priority": 1},
+    {"name": "선릉", "line": "2호선", "district": "강남구", "lat": 37.5045, "lng": 127.0490, "priority": 1},
+    {"name": "강남구청", "line": "7호선", "district": "강남구", "lat": 37.5172, "lng": 127.0410, "priority": 1},
+    {"name": "신사", "line": "3호선", "district": "강남구", "lat": 37.5160, "lng": 127.0205, "priority": 1},
+    {"name": "압구정", "line": "3호선", "district": "강남구", "lat": 37.5270, "lng": 127.0283, "priority": 1},
+    {"name": "용산", "line": "1호선", "district": "용산구", "lat": 37.5299, "lng": 126.9645, "priority": 1},
+    {"name": "종각", "line": "1호선", "district": "종로구", "lat": 37.5700, "lng": 126.9830, "priority": 1},
+    {"name": "시청", "line": "1호선", "district": "중구", "lat": 37.5657, "lng": 126.9770, "priority": 1},
+    {"name": "동대문역사문화공원", "line": "2호선", "district": "중구", "lat": 37.5650, "lng": 127.0079, "priority": 1},
+    {"name": "혜화", "line": "4호선", "district": "종로구", "lat": 37.5842, "lng": 127.0019, "priority": 1},
+    {"name": "경복궁", "line": "3호선", "district": "종로구", "lat": 37.5759, "lng": 126.9735, "priority": 1},
+    {"name": "안국", "line": "3호선", "district": "종로구", "lat": 37.5764, "lng": 126.9850, "priority": 1},
+    {"name": "을지로3가", "line": "2호선", "district": "중구", "lat": 37.5663, "lng": 126.9923, "priority": 1},
+    {"name": "충무로", "line": "3호선", "district": "중구", "lat": 37.5614, "lng": 126.9948, "priority": 1}
+  ]
+}
