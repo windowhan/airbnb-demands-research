@@ -219,6 +219,8 @@ class ListingCrawler:
             job_type="listing",
             started_at=datetime.utcnow(),
             total_requests=len(listings),
+            successful_requests=0,
+            failed_requests=0,
         )
 
         for listing in listings:

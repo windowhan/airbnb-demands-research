@@ -315,6 +315,8 @@ class SearchCrawler:
             job_type="search",
             started_at=datetime.utcnow(),
             total_requests=len(stations),
+            successful_requests=0,
+            failed_requests=0,
         )
 
         for station in stations:
