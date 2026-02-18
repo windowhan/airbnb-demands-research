@@ -26,9 +26,13 @@ class SearchCrawler:
 
     async def crawl_station(self, station: Station,
                             checkin: date | None = None,
-                            checkout: date | None = None) -> dict[str, Any] | None:
+                            checkout: date | None = None,
+                            max_pages: int = 20) -> dict[str, Any] | None:
         """
-        단일 역에 대해 검색을 실행하고 결과를 DB에 저장합니다.
+        단일 역에 대해 전체 페이지를 순회하며 검색을 실행하고 결과를 DB에 저장합니다.
+
+        Args:
+            max_pages: 최대 페이지 수 (무한 루프 방지)
 
         Returns:
             저장된 스냅샷 요약 정보 또는 None
@@ -41,23 +45,42 @@ class SearchCrawler:
         logger.info("Searching near %s (%s) [%s ~ %s]",
                      station.name, station.line, checkin, checkout)
 
-        data = await self._client.search_stays(
-            lat=station.latitude,
-            lng=station.longitude,
-            checkin=checkin,
-            checkout=checkout,
-        )
+        all_listings: list[dict] = []
+        cursor: str | None = None
+        first_hash = ""
 
-        if data is None:
-            logger.warning("No data returned for station %s", station.name)
-            return None
+        for page in range(max_pages):
+            data = await self._client.search_stays(
+                lat=station.latitude,
+                lng=station.longitude,
+                checkin=checkin,
+                checkout=checkout,
+                cursor=cursor,
+            )
 
-        return self._save_results(station, data, checkin, checkout)
+            if data is None:
+                if page == 0:
+                    logger.warning("No data returned for station %s", station.name)
+                    return None
+                break
 
-    def _save_results(self, station: Station, data: dict,
-                      checkin: date, checkout: date) -> dict[str, Any]:
-        """검색 결과를 파싱하여 DB에 저장합니다."""
-        listings_data = self._extract_listings(data)
+            if page == 0:
+                first_hash = self._client.compute_response_hash(data)
+
+            page_listings = self._extract_listings(data)
+            all_listings.extend(page_listings)
+
+            cursor = self._extract_next_cursor(data)
+            if not cursor or not page_listings:
+                break
+
+        logger.info("Fetched %d listings across pages for %s", len(all_listings), station.name)
+        return self._save_results(station, all_listings, checkin, checkout, first_hash)
+
+    def _save_results(self, station: Station, listings_data: list[dict],
+                      checkin: date, checkout: date,
+                      response_hash: str = "") -> dict[str, Any]:
+        """수집된 숙소 목록을 DB에 저장합니다."""
         prices = [l["price"] for l in listings_data if l.get("price")]
 
         snapshot_info = {
@@ -81,7 +104,7 @@ class SearchCrawler:
                 available_count=sum(1 for l in listings_data if l.get("available", True)),
                 checkin_date=checkin,
                 checkout_date=checkout,
-                raw_response_hash=self._client.compute_response_hash(data),
+                raw_response_hash=response_hash,
             )
             session.add(snapshot)
 
@@ -306,6 +329,25 @@ class SearchCrawler:
         except (ValueError, TypeError):
             return None
 
+    @staticmethod
+    def _extract_next_cursor(data: dict) -> str | None:
+        """API 응답에서 다음 페이지 커서를 추출합니다.
+
+        응답 구조:
+        data.presentation.staysSearch.results.paginationInfo.nextPageCursor
+        """
+        try:
+            return (
+                data.get("data", {})
+                .get("presentation", {})
+                .get("staysSearch", {})
+                .get("results", {})
+                .get("paginationInfo", {})
+                .get("nextPageCursor")
+            )
+        except AttributeError:
+            return None
+
     async def crawl_all_stations(self, stations: list[Station],
                                  checkin: date | None = None,
                                  checkout: date | None = None) -> list[dict]:
@@ -333,12 +375,13 @@ class SearchCrawler:
 
         crawl_log.finished_at = datetime.utcnow()
         crawl_log.status = "success" if crawl_log.failed_requests == 0 else "partial"
+        successful_count = crawl_log.successful_requests
 
         with session_scope() as session:
             session.add(crawl_log)
 
         logger.info(
             "Search crawl complete: %d/%d stations successful",
-            crawl_log.successful_requests, len(stations),
+            successful_count, len(stations),
         )
         return results

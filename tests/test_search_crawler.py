@@ -338,11 +338,12 @@ class TestSaveResults:
     ):
         """검색 결과가 DB에 SearchSnapshot과 Listing으로 저장된다."""
         crawler = SearchCrawler(mock_airbnb_client)
+        listings_data = crawler._extract_listings(sample_search_response)
 
         with patch("crawler.search_crawler.session_scope", mock_session_scope):
             result = crawler._save_results(
                 sample_station,
-                sample_search_response,
+                listings_data,
                 date(2026, 2, 18),
                 date(2026, 2, 19),
             )
@@ -360,10 +361,7 @@ class TestSaveResults:
         assert snapshots[0].total_listings == 3
 
         # DB에 Listing들이 저장되었는지 확인
-        # sample_listing fixture가 이미 하나 있으므로 conftest의 1234567890과 merge됨
         all_listings = db_session.query(Listing).all()
-        # 기존 sample_station 생성 시 sample_listing은 없으므로 새로 3개가 생겨야 함
-        # 단, conftest의 sample_listing 미사용이므로 3개
         airbnb_ids = {l.airbnb_id for l in all_listings}
         assert "1234567890" in airbnb_ids
         assert "9876543210" in airbnb_ids
@@ -380,13 +378,14 @@ class TestSaveResults:
     ):
         """이미 존재하는 리스팅은 last_seen과 base_price가 업데이트된다."""
         crawler = SearchCrawler(mock_airbnb_client)
+        listings_data = crawler._extract_listings(sample_search_response)
 
         old_last_seen = sample_listing.last_seen
 
         with patch("crawler.search_crawler.session_scope", mock_session_scope):
             crawler._save_results(
                 sample_station,
-                sample_search_response,
+                listings_data,
                 date(2026, 2, 18),
                 date(2026, 2, 19),
             )
@@ -403,19 +402,12 @@ class TestSaveResults:
         mock_session_scope,
         db_session,
     ):
-        """리스팅이 없는 검색 결과도 스냅샷은 저장된다."""
+        """리스팅이 없는 경우도 스냅샷은 저장된다."""
         crawler = SearchCrawler(mock_airbnb_client)
-        empty_data = {
-            "data": {
-                "presentation": {
-                    "staysSearch": {"results": {"searchResults": []}}
-                }
-            }
-        }
 
         with patch("crawler.search_crawler.session_scope", mock_session_scope):
             result = crawler._save_results(
-                sample_station, empty_data, date(2026, 2, 18), date(2026, 2, 19)
+                sample_station, [], date(2026, 2, 18), date(2026, 2, 19)
             )
 
         assert result["total"] == 0
@@ -620,24 +612,321 @@ class TestSearchCrawlerEdgeCases:
     async def test_save_results_skips_no_id(
         self, mock_airbnb_client, mock_session_scope
     ):
-        """id가 없는 리스팅은 건너뛴다 (line 92)."""
+        """id가 없는 리스팅은 건너뛴다."""
         crawler = SearchCrawler(mock_airbnb_client)
 
         station = MagicMock()
         station.id = 1
         station.name = "강남역"
 
-        # _extract_listings가 id 없는 항목을 반환하도록 mock
         listings_with_no_id = [
             {"id": "12345", "name": "Normal", "price": 100000},
-            {"name": "No ID listing"},  # no 'id' field
+            {"name": "No ID listing"},  # id 키 없음
         ]
 
-        with patch("crawler.search_crawler.session_scope", mock_session_scope), \
-             patch.object(crawler, "_extract_listings", return_value=listings_with_no_id):
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
             from datetime import date
-            data = {"some": "data"}
             crawler._save_results(
-                station, data,
+                station, listings_with_no_id,
                 date(2026, 3, 1), date(2026, 3, 2),
             )
+
+    def test_save_results_with_response_hash(
+        self, mock_airbnb_client, sample_station, mock_session_scope, db_session
+    ):
+        """response_hash 인자가 스냅샷에 저장된다."""
+        crawler = SearchCrawler(mock_airbnb_client)
+        listings_data = [{"id": "111", "name": "A", "price": 50000, "available": True,
+                          "room_type": "", "lat": None, "lng": None,
+                          "rating": None, "review_count": None}]
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
+            crawler._save_results(
+                sample_station, listings_data,
+                date(2026, 3, 1), date(2026, 3, 2),
+                response_hash="testhash",
+            )
+        snapshots = db_session.query(SearchSnapshot).all()
+        assert snapshots[0].raw_response_hash == "testhash"
+
+
+# ─── _extract_next_cursor ─────────────────────────────────────────────
+
+
+class TestExtractNextCursor:
+    """_extract_next_cursor 메서드 테스트."""
+
+    def test_extracts_cursor_from_response(self):
+        """paginationInfo.nextCursor에서 커서 문자열을 추출한다."""
+        data = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "paginationInfo": {"nextPageCursor": "eyJsaW1pdCI6MTh9"}
+                        }
+                    }
+                }
+            }
+        }
+        assert SearchCrawler._extract_next_cursor(data) == "eyJsaW1pdCI6MTh9"
+
+    def test_returns_none_when_no_pagination_info(self):
+        """paginationInfo가 없으면 None을 반환한다."""
+        data = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {"results": {}}
+                }
+            }
+        }
+        assert SearchCrawler._extract_next_cursor(data) is None
+
+    def test_returns_none_when_cursor_is_none(self):
+        """nextCursor 값이 None이면 None을 반환한다."""
+        data = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {"paginationInfo": {"nextPageCursor": None}}
+                    }
+                }
+            }
+        }
+        assert SearchCrawler._extract_next_cursor(data) is None
+
+    def test_returns_none_on_empty_dict(self):
+        """빈 dict에서는 None을 반환한다."""
+        assert SearchCrawler._extract_next_cursor({}) is None
+
+    def test_returns_none_when_data_key_is_none(self):
+        """data 키의 값이 None이면 AttributeError를 잡고 None을 반환한다."""
+        assert SearchCrawler._extract_next_cursor({"data": None}) is None
+
+
+# ─── crawl_station pagination ─────────────────────────────────────────
+
+
+class TestCrawlStationPagination:
+    """crawl_station 페이지네이션 테스트."""
+
+    async def test_fetches_multiple_pages(
+        self,
+        mock_airbnb_client,
+        sample_search_response,
+        sample_station,
+        mock_session_scope,
+    ):
+        """nextCursor가 있으면 다음 페이지를 계속 요청한다."""
+        page1 = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [
+                                {
+                                    "propertyId": "AAA",
+                                    "nameLocalized": "숙소A",
+                                    "avgRatingLocalized": "4.5",
+                                    "structuredDisplayPrice": {
+                                        "primaryLine": {"price": "₩100,000"}
+                                    },
+                                    "demandStayListing": {
+                                        "id": "", "roomTypeCategory": "entire_home",
+                                        "reviewsCount": 1,
+                                        "location": {"coordinate": {"latitude": 37.5, "longitude": 127.0}},
+                                    },
+                                }
+                            ],
+                            "paginationInfo": {"nextPageCursor": "cursor_page2"},
+                        }
+                    }
+                }
+            }
+        }
+        page2 = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [
+                                {
+                                    "propertyId": "BBB",
+                                    "nameLocalized": "숙소B",
+                                    "avgRatingLocalized": "4.0",
+                                    "structuredDisplayPrice": {
+                                        "primaryLine": {"price": "₩80,000"}
+                                    },
+                                    "demandStayListing": {
+                                        "id": "", "roomTypeCategory": "private_room",
+                                        "reviewsCount": 2,
+                                        "location": {"coordinate": {"latitude": 37.5, "longitude": 127.0}},
+                                    },
+                                }
+                            ],
+                            "paginationInfo": {"nextPageCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_airbnb_client.search_stays = AsyncMock(side_effect=[page1, page2])
+        crawler = SearchCrawler(mock_airbnb_client)
+
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
+            result = await crawler.crawl_station(
+                sample_station, date(2026, 2, 18), date(2026, 2, 19)
+            )
+
+        assert result is not None
+        assert result["total"] == 2
+        assert mock_airbnb_client.search_stays.await_count == 2
+        # 두 번째 호출에 cursor 인자가 전달됐는지 확인
+        second_call = mock_airbnb_client.search_stays.call_args_list[1]
+        assert second_call.kwargs.get("cursor") == "cursor_page2"
+
+    async def test_stops_when_page_returns_empty_listings(
+        self,
+        mock_airbnb_client,
+        sample_search_response,
+        sample_station,
+        mock_session_scope,
+    ):
+        """페이지 결과가 비어있으면 커서가 있어도 루프를 종료한다."""
+        page1 = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [
+                                {
+                                    "propertyId": "CCC",
+                                    "nameLocalized": "숙소C",
+                                    "avgRatingLocalized": "4.0",
+                                    "structuredDisplayPrice": {
+                                        "primaryLine": {"price": "₩90,000"}
+                                    },
+                                    "demandStayListing": {
+                                        "id": "", "roomTypeCategory": "entire_home",
+                                        "reviewsCount": 0,
+                                        "location": {"coordinate": {"latitude": 37.5, "longitude": 127.0}},
+                                    },
+                                }
+                            ],
+                            "paginationInfo": {"nextPageCursor": "some_cursor"},
+                        }
+                    }
+                }
+            }
+        }
+        # 두 번째 페이지는 빈 결과
+        page2 = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [],
+                            "paginationInfo": {"nextPageCursor": "another_cursor"},
+                        }
+                    }
+                }
+            }
+        }
+        mock_airbnb_client.search_stays = AsyncMock(side_effect=[page1, page2])
+        crawler = SearchCrawler(mock_airbnb_client)
+
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
+            result = await crawler.crawl_station(
+                sample_station, date(2026, 2, 18), date(2026, 2, 19)
+            )
+
+        assert result["total"] == 1
+        assert mock_airbnb_client.search_stays.await_count == 2
+
+    async def test_stops_at_max_pages(
+        self,
+        mock_airbnb_client,
+        sample_station,
+        mock_session_scope,
+    ):
+        """max_pages 한도에 도달하면 루프를 종료한다."""
+        page = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [
+                                {
+                                    "propertyId": "DDD",
+                                    "nameLocalized": "숙소D",
+                                    "avgRatingLocalized": "4.0",
+                                    "structuredDisplayPrice": {
+                                        "primaryLine": {"price": "₩70,000"}
+                                    },
+                                    "demandStayListing": {
+                                        "id": "", "roomTypeCategory": "entire_home",
+                                        "reviewsCount": 0,
+                                        "location": {"coordinate": {"latitude": 37.5, "longitude": 127.0}},
+                                    },
+                                }
+                            ],
+                            "paginationInfo": {"nextPageCursor": "always_cursor"},
+                        }
+                    }
+                }
+            }
+        }
+        mock_airbnb_client.search_stays = AsyncMock(return_value=page)
+        crawler = SearchCrawler(mock_airbnb_client)
+
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
+            result = await crawler.crawl_station(
+                sample_station, date(2026, 2, 18), date(2026, 2, 19), max_pages=3
+            )
+
+        assert mock_airbnb_client.search_stays.await_count == 3
+        assert result["total"] == 3
+
+    async def test_breaks_on_none_response_after_first_page(
+        self,
+        mock_airbnb_client,
+        sample_station,
+        mock_session_scope,
+    ):
+        """첫 페이지 이후 None 응답이 오면 루프를 종료하고 수집된 결과를 저장한다."""
+        page1 = {
+            "data": {
+                "presentation": {
+                    "staysSearch": {
+                        "results": {
+                            "searchResults": [
+                                {
+                                    "propertyId": "EEE",
+                                    "nameLocalized": "숙소E",
+                                    "avgRatingLocalized": "4.0",
+                                    "structuredDisplayPrice": {
+                                        "primaryLine": {"price": "₩60,000"}
+                                    },
+                                    "demandStayListing": {
+                                        "id": "", "roomTypeCategory": "entire_home",
+                                        "reviewsCount": 0,
+                                        "location": {"coordinate": {"latitude": 37.5, "longitude": 127.0}},
+                                    },
+                                }
+                            ],
+                            "paginationInfo": {"nextPageCursor": "cursor_x"},
+                        }
+                    }
+                }
+            }
+        }
+        mock_airbnb_client.search_stays = AsyncMock(side_effect=[page1, None])
+        crawler = SearchCrawler(mock_airbnb_client)
+
+        with patch("crawler.search_crawler.session_scope", mock_session_scope):
+            result = await crawler.crawl_station(
+                sample_station, date(2026, 2, 18), date(2026, 2, 19)
+            )
+
+        assert result["total"] == 1
+        assert mock_airbnb_client.search_stays.await_count == 2

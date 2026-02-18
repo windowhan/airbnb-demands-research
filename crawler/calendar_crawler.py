@@ -205,14 +205,16 @@ class CalendarCrawler:
 
         crawl_log.finished_at = datetime.utcnow()
         crawl_log.status = "success" if crawl_log.failed_requests == 0 else "partial"
+        successful_count = crawl_log.successful_requests
+        failed_count = crawl_log.failed_requests
 
         with session_scope() as session:
             session.add(crawl_log)
 
         summary = {
             "total": len(listings),
-            "success": crawl_log.successful_requests,
-            "failed": crawl_log.failed_requests,
+            "success": successful_count,
+            "failed": failed_count,
         }
 
         logger.info("Calendar crawl complete: %d/%d listings",

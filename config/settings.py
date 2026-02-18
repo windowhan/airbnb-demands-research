@@ -20,7 +20,7 @@ LOG_DIR = BASE_DIR / "logs"
 CRAWL_TIER = os.getenv("CRAWL_TIER", "A").upper()
 
 # ── 검색 파라미터 ─────────────────────────────────────────────
-SEARCH_RADIUS_KM = 1.0          # 역 중심 검색 반경
+SEARCH_RADIUS_KM = 3.0          # 역 중심 검색 반경
 DEFAULT_GUESTS = 2              # 기본 게스트 수
 CALENDAR_LOOKAHEAD_DAYS = 90    # 캘린더 조회 범위 (일)
 CURRENCY = "KRW"
@@ -37,9 +37,9 @@ TIER_CONFIG = {
         "delay_base": 7.0,                # 기본 딜레이 (초)
         "delay_jitter": (2.0, 8.0),       # 랜덤 지터 범위
         "proxy_required": False,
-        "requests_per_ip_before_rotate": 50,
-        "max_requests_per_hour": 50,
-        "daily_limit_per_ip": 800,
+        "requests_per_ip_before_rotate": 500,
+        "max_requests_per_hour": 500,
+        "daily_limit_per_ip": 8000,
     },
     "B": {
         "station_priority": [1, 2],       # 1, 2순위 역 (약 100개)
